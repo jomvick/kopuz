@@ -18,6 +18,10 @@ use objc2_media_player::{
     MPRemoteCommandHandlerStatus,
 };
 
+// SAFETY:
+// These are well-documented CoreFoundation C functions. The FFI
+// signatures match the official Apple headers. Each call site
+// documents why the specific call is safe.
 unsafe extern "C" {
     fn CFRunLoopGetMain() -> *mut std::ffi::c_void;
     fn CFRunLoopWakeUp(rl: *mut std::ffi::c_void);
@@ -41,6 +45,10 @@ unsafe extern "C" {
 
 type IOPMAssertionID = u32;
 #[link(name = "IOKit", kind = "framework")]
+// SAFETY:
+// IOPMAssertionCreateWithName is a documented IOKit function.
+// The FFI signature matches Apple's IOPMLib.h header. The call
+// site documents the specific safety invariants.
 unsafe extern "C" {
     fn IOPMAssertionCreateWithName(
         assertion_type: *const std::ffi::c_void,
