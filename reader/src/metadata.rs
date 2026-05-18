@@ -155,7 +155,7 @@ pub fn read(track_path: &Path, cover_cache: &Path, library: &mut Library) -> Opt
         .primary_tag()
         .or_else(|| tagged_file.first_tag());
 
-    let track = extract_metadata(tag, properties, track_path);
+    let mut track = extract_metadata(tag, properties, track_path);
     let album_id = track.album_id.clone();
 
     let album_artist = tag
@@ -194,8 +194,68 @@ pub fn read(track_path: &Path, cover_cache: &Path, library: &mut Library) -> Opt
         });
     }
 
+    if track.duration == 0 {
+        let (s_duration, s_sample_rate, s_bitrate) = symphonia_duration(track_path);
+        if s_duration > 0 {
+            track.duration = s_duration;
+            track.khz = s_sample_rate;
+            track.bitrate = s_bitrate;
+        }
+    }
+
     library.add_track(track.clone());
     Some(track)
+}
+
+fn symphonia_duration(track_path: &Path) -> (u64, u32, u16) {
+    let file = match std::fs::File::open(track_path) {
+        Ok(f) => f,
+        Err(_) => return (0, 0, 0),
+    };
+    let file_size = file.metadata().ok().map(|m| m.len()).unwrap_or(0);
+
+    let mut hint = Hint::new();
+    if let Some(ext) = track_path.extension().and_then(|ext| ext.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let mut sample_rate = 0u32;
+    let mut duration = 0u64;
+
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    if let Ok(probed) = symphonia::default::get_probe().format(
+        &hint,
+        mss,
+        &FormatOptions::default(),
+        &MetadataOptions::default(),
+    ) {
+        if let Some(track_info) = probed
+            .format
+            .tracks()
+            .iter()
+            .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
+            .or_else(|| probed.format.tracks().first())
+        {
+            let codec_params = &track_info.codec_params;
+            sample_rate = codec_params.sample_rate.unwrap_or(0);
+            duration = codec_params
+                .time_base
+                .zip(codec_params.n_frames)
+                .map(|(time_base, n_frames)| {
+                    let time = time_base.calc_time(n_frames);
+                    time.seconds + u64::from(time.frac > 0.0)
+                })
+                .unwrap_or(0);
+        }
+    }
+
+    let bitrate = if duration > 0 {
+        ((file_size * 8) / duration / 1000).min(u16::MAX as u64) as u16
+    } else {
+        0
+    };
+
+    (duration, sample_rate, bitrate)
 }
 
 fn is_matroska_audio(track_path: &Path) -> bool {
