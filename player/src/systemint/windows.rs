@@ -47,6 +47,8 @@ pub enum SystemEvent {
 }
 
 static SMTC: OnceLock<SystemMediaTransportControls> = OnceLock::new();
+static EVENT_SENDER: OnceLock<UnboundedSender<SystemEvent>> = OnceLock::new();
+static EVENT_RECEIVER: OnceLock<Mutex<UnboundedReceiver<SystemEvent>>> = OnceLock::new();
 
 fn get_tx() -> UnboundedSender<SystemEvent> {
     EVENT_SENDER
