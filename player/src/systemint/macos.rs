@@ -1,3 +1,14 @@
+// macOS system integration: media keys, Now Playing info, audio session, power
+// management, and run loop heartbeat for remote command dispatching.
+//
+// Architecture:
+// - init() sets up: NSProcessInfo (prevent App Nap), IOKit (no idle sleep),
+//   AVAudioSession (background playback), MPRemoteCommandCenter (media keys),
+//   CFRunLoopTimer (periodic heartbeat to wake the Tokio runtime)
+// - update_now_playing() pushes metadata + artwork to MPNowPlayingInfoCenter
+// - CFRunLoopWakeUp() is called to unblock the main thread from Tokio tasks
+// - All Objective-C/CoreFoundation FFI is documented with // SAFETY: invariants
+
 use std::ptr::NonNull;
 use std::sync::Mutex as StdMutex;
 use std::sync::{Arc, OnceLock};

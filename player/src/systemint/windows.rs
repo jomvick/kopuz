@@ -1,3 +1,16 @@
+// Windows system integration: System Media Transport Controls (SMTC),
+// media keys, Now Playing info, and HWND discovery.
+//
+// Architecture:
+// - COM must be initialized on the thread that uses WinRT APIs. Since the
+//   Tokio thread pool does not call CoInitializeEx, setup runs on a
+//   dedicated std::thread::spawn thread.
+// - HWND discovery uses EnumWindows to find the process's visible window.
+//   If none exists yet, a message-only window (HWND_MESSAGE) is created.
+// - SMTC button events (play/pause/next/prev/seek) are forwarded to the
+//   player via an unbounded mpsc channel.
+// - CoInitializeEx + WinRT/COM FFI is documented with // SAFETY: invariants.
+
 use std::sync::OnceLock;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};

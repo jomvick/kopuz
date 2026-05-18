@@ -4,12 +4,28 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 
+// Architecture:
+// - A background download task (tokio::spawn) fetches audio chunks via HTTP
+// - Synchronous Read/Seek impls consume the buffer (required by symphonia decoder)
+// - Shared state uses tokio::sync::Mutex so the async task never blocks
+//   a Tokio worker thread with std::sync::Mutex::lock()
+// - The sync side uses blocking_lock() + 5ms polling (acceptable latency for audio)
+// - Prebuffering ensures at least 256KB before first read to avoid starvation
+
 const MIN_PREBUFFER_BYTES: usize = 256 * 1024; // 256KB
 
 const MIN_BUFFER_AHEAD: usize = 128 * 1024; // 128KB
 
 const MAX_BUFFER_SIZE: usize = 1024 * 1024 * 1024; // 1GB
 
+/// Shared state between the async downloader and sync readers.
+///
+/// Fields:
+/// - `buffer`: accumulated audio bytes
+/// - `done`: HTTP stream finished (success or error)
+/// - `error`: reason for failure, if any
+/// - `total_size`: Content-Length header value (may be unknown for radio/streams)
+/// - `prebuffer_ready`: enough data buffered to start playback safely
 struct SharedState {
     buffer: Vec<u8>,
     done: bool,
@@ -44,6 +60,10 @@ impl StreamBuffer {
 
         let state_clone = state.clone();
 
+        // Background download task.
+        // Runs inside tokio::spawn so it integrates with the async runtime.
+        // Shared state access uses tokio::sync::Mutex::lock().await (never blocks
+        // a worker thread). The sync reader side uses blocking_lock() + polling.
         let handle = tokio::runtime::Handle::current();
         handle.spawn(async move {
             let client = reqwest::Client::builder()
@@ -131,6 +151,13 @@ impl StreamBuffer {
         Self { state, pos: 0 }
     }
 
+    // Blocking wait helpers.
+    // These are called from the sync Read impl, so they use blocking_lock()
+    // on the tokio::sync::Mutex. A 5ms polling interval is negligible compared
+    // to network latency (~100ms+) and audio decode times.
+    // The async download side uses Notify::notify_waiters() to wake any
+    // eventual future blocking_lock waiter faster, though polling alone suffices.
+
     fn wait_for_prebuffer(&self) {
         let (lock, _notify) = &*self.state;
         loop {
@@ -195,6 +222,10 @@ impl Read for StreamBuffer {
             }
         }
 
+        // Main read loop:
+        // 1. If data is available at current pos → copy into buf, advance pos, return
+        // 2. If download is finished (done) → return 0 (EOF) or error
+        // 3. Otherwise → wait for more data from the download task and retry
         let (lock, _notify) = &*self.state;
         loop {
             let state = lock.blocking_lock();
