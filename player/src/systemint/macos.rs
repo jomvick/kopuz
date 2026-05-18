@@ -87,17 +87,6 @@ pub enum SystemEvent {
     Prev,
 }
 
-struct ThreadSafeArtwork(objc2::rc::Retained<MPMediaItemArtwork>);
-// SAFETY:
-// - MPMediaItemArtwork is an immutable, thread-safe reference-counted
-//   object on Apple platforms. It can be safely sent and shared across
-//   threads.
-// - The Retained pointer provides ownership semantics equivalent to
-//   Arc, and the underlying Objective-C object is usable from any
-//   thread.
-unsafe impl Send for ThreadSafeArtwork {}
-unsafe impl Sync for ThreadSafeArtwork {}
-
 static BACKGROUND_HANDLER: OnceLock<Arc<StdMutex<Option<Box<dyn Fn(SystemEvent) + Send + Sync>>>>> =
     OnceLock::new();
 
@@ -299,9 +288,6 @@ pub fn update_now_playing(
 ) {
     init();
 
-    static ARTWORK_CACHE: OnceLock<std::sync::Mutex<Option<(String, ThreadSafeArtwork)>>> =
-        OnceLock::new();
-
     // SAFETY:
     // - This entire block interacts with MediaPlayer framework objects
     //   (MPNowPlayingInfoCenter, MPMediaItemArtwork) which are thread-safe
@@ -319,8 +305,6 @@ pub fn update_now_playing(
     //   takes ownership without over-releasing.
     // - The artwork pointer null-check ensures we only convert valid
     //   pointers to Retained.
-    // - The ARTWORK_CACHE is protected by a std::sync::Mutex, preventing
-    //   data races.
     unsafe {
         let center = MPNowPlayingInfoCenter::defaultCenter();
 
@@ -359,48 +343,24 @@ pub fn update_now_playing(
         );
 
         if let Some(path) = artwork_path {
-            let cache_lock = ARTWORK_CACHE.get_or_init(|| std::sync::Mutex::new(None));
-            let mut cache = cache_lock.lock().unwrap();
+            let ns_path = NSString::from_str(path);
+            if let Some(image) = NSImage::initWithContentsOfFile(NSImage::alloc(), &ns_path) {
+                use objc2::msg_send;
+                let artwork_alloc = MPMediaItemArtwork::alloc();
+                let artwork_ptr: *mut MPMediaItemArtwork = std::mem::transmute(artwork_alloc);
+                let artwork_raw: *mut MPMediaItemArtwork =
+                    msg_send![artwork_ptr, initWithImage: &*image];
 
-            let cached_artwork = if let Some((cached_path, artwork_wrapper)) = &*cache {
-                if cached_path == path {
-                    Some(artwork_wrapper.0.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+                if !artwork_raw.is_null() {
+                    let retained: objc2::rc::Retained<MPMediaItemArtwork> =
+                        objc2::rc::Retained::from_raw(artwork_raw).expect("retained artwork");
 
-            if let Some(artwork) = cached_artwork {
-                let artwork_ref: &AnyObject =
-                    &*(std::mem::transmute::<_, *const AnyObject>(&*artwork));
-                info.setObject_forKey(
-                    artwork_ref,
-                    ProtocolObject::from_ref(MPMediaItemPropertyArtwork),
-                );
-            } else {
-                let ns_path = NSString::from_str(path);
-                if let Some(image) = NSImage::initWithContentsOfFile(NSImage::alloc(), &ns_path) {
-                    use objc2::msg_send;
-                    let artwork_alloc = MPMediaItemArtwork::alloc();
-                    let artwork_ptr: *mut MPMediaItemArtwork = std::mem::transmute(artwork_alloc);
-                    let artwork_raw: *mut MPMediaItemArtwork =
-                        msg_send![artwork_ptr, initWithImage: &*image];
-
-                    if !artwork_raw.is_null() {
-                        let retained: objc2::rc::Retained<MPMediaItemArtwork> =
-                            objc2::rc::Retained::from_raw(artwork_raw).expect("retained artwork");
-
-                        let artwork_ref: &AnyObject =
-                            &*(std::mem::transmute::<_, *const AnyObject>(&*retained));
-                        info.setObject_forKey(
-                            artwork_ref,
-                            ProtocolObject::from_ref(MPMediaItemPropertyArtwork),
-                        );
-
-                        *cache = Some((path.to_string(), ThreadSafeArtwork(retained)));
-                    }
+                    let artwork_ref: &AnyObject =
+                        &*(std::mem::transmute::<_, *const AnyObject>(&*retained));
+                    info.setObject_forKey(
+                        artwork_ref,
+                        ProtocolObject::from_ref(MPMediaItemPropertyArtwork),
+                    );
                 }
             }
         }

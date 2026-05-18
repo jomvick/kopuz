@@ -46,18 +46,7 @@ pub enum SystemEvent {
     Seek(f64),
 }
 
-struct SendableSmtc(SystemMediaTransportControls);
-// SAFETY:
-// - SystemMediaTransportControls is a WinRT object that is thread-safe
-//   by design; all its methods are safe to call from any thread.
-// - The underlying COM object uses reference counting and is safe to
-//   send and share across threads.
-unsafe impl Send for SendableSmtc {}
-unsafe impl Sync for SendableSmtc {}
-
-static EVENT_SENDER: OnceLock<UnboundedSender<SystemEvent>> = OnceLock::new();
-static EVENT_RECEIVER: OnceLock<Mutex<UnboundedReceiver<SystemEvent>>> = OnceLock::new();
-static SMTC: OnceLock<SendableSmtc> = OnceLock::new();
+static SMTC: OnceLock<SystemMediaTransportControls> = OnceLock::new();
 
 fn get_tx() -> UnboundedSender<SystemEvent> {
     EVENT_SENDER
@@ -259,7 +248,7 @@ fn setup_smtc(hwnd: HWND) {
 
     match result {
         Ok(smtc) => {
-            if SMTC.set(SendableSmtc(smtc)).is_ok() {
+            if SMTC.set(smtc).is_ok() {
                 println!("[windows] SMTC initialised");
             }
         }
@@ -346,7 +335,6 @@ pub fn update_now_playing(
     }
 
     let Some(smtc) = SMTC.get() else { return };
-    let smtc = &smtc.0;
 
     let _ = smtc.SetPlaybackStatus(if playing {
         MediaPlaybackStatus::Playing
@@ -377,7 +365,7 @@ pub fn update_now_playing(
                     if let Some(bytes) = fetch_artwork_bytes(&art_owned) {
                         if let Some(stream_ref) = stream_ref_from_bytes(&bytes) {
                             if let Some(smtc) = SMTC.get() {
-                                if let Ok(updater) = smtc.0.DisplayUpdater() {
+                                if let Ok(updater) = smtc.DisplayUpdater() {
                                     let _ = updater.SetThumbnail(&stream_ref);
                                     let _ = updater.Update();
                                 }
