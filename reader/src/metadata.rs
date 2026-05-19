@@ -198,8 +198,12 @@ pub fn read(track_path: &Path, cover_cache: &Path, library: &mut Library) -> Opt
         let (s_duration, s_sample_rate, s_bitrate) = symphonia_duration(track_path);
         if s_duration > 0 {
             track.duration = s_duration;
-            track.khz = s_sample_rate;
-            track.bitrate = s_bitrate;
+            if s_sample_rate > 0 {
+                track.khz = s_sample_rate;
+            }
+            if s_bitrate > 0 {
+                track.bitrate = s_bitrate;
+            }
         }
     }
 
